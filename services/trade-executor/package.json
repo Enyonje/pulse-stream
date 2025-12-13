@@ -1,0 +1,21 @@
+"axios": "^1.6.0"
+
+
+{
+  "name": "trade-executor",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/app.js",
+  "type": "module",
+  "scripts": {
+    "start:dev": "node src/app.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "kafkajs": "^2.2.4",
+    "pino": "^9.2.0",
+    "pino-pretty": "^11.2.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1"
+  }
+}

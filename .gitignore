@@ -1,0 +1,29 @@
+# Node
+node_modules/
+pnpm-lock.yaml
+npm-debug.log*
+yarn.lock
+
+# Python (if any)
+__pycache__/
+*.pyc
+
+# Build output
+dist/
+build/
+.next/
+.vite/
+coverage/
+
+# Docker
+**/.dockerignore
+.DS_Store
+
+# Env & secrets
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Prisma
+**/prisma/migrations/dev/**

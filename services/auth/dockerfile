@@ -1,0 +1,17 @@
+FROM node:slim
+
+WORKDIR /app
+
+# Install pnpm globally
+RUN npm install -g pnpm
+
+# Copy package.json and lockfile first
+COPY package.json pnpm-lock.yaml* ./
+
+# Install dependencies
+RUN pnpm install --prod
+
+# Copy source code (excluding node_modules via .dockerignore)
+COPY . .
+
+CMD ["pnpm", "start:dev"]

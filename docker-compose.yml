@@ -1,0 +1,278 @@
+services:
+  redpanda:
+    image: redpandadata/redpanda:latest
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    networks:
+      - pulse
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9644/v1/status/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  redpanda-console:
+    image: redpandadata/console:latest
+    depends_on:
+      - redpanda
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      - "8081:8080"
+    networks:
+      - pulse
+
+  restart: always
+deploy:
+  resources:
+    limits:
+      cpus: "0.50"
+      memory: "512M"
+volumes:
+  - timescale-data:/var/lib/postgresql/data
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: timescaledb
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: pulse_db
+    ports:
+      - "5433:5432"
+    networks:
+      - pulse
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse -d pulse_db -h localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@pulse.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - timescaledb
+    networks:
+      - pulse
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6380:6379"
+    networks:
+      - pulse
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  migrate:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./packages/database:/app
+    command: >
+      sh -c "
+        npm install -g pnpm prisma &&
+        pnpm install &&
+        pnpm exec prisma migrate deploy &&
+        pnpm exec prisma generate
+      "
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - pulse
+
+  auth:
+    build: ./services/auth
+    container_name: auth-service
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: "postgresql://pulse:password@timescaledb:5432/pulse_db"
+      KAFKA_BROKER: redpanda:9092
+      JWT_SECRET: supersecretjwt
+    ports:
+      - "3002:3002"
+    networks:
+      - pulse
+    command: >
+      sh -c "
+        pnpm exec prisma generate &&
+        pnpm start:dev
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  user-prefs:
+    build: ./services/user-prefs
+    container_name: user-prefs
+    ports:
+      - "3000:3000"
+    networks:
+      - pulse
+    environment:
+      JWT_SECRET: supersecret
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    environment:
+      - VITE_API_URL=http://auth:3002
+      - VITE_WS_URL=ws://ws-gateway:8080
+    networks:
+      - pulse
+
+  ws-gateway:
+    build: ./services/ws-gateway
+    ports:
+      - "8082:8080"
+    depends_on:
+      - redis
+    networks:
+      - pulse
+
+  price-api:
+    build: ./services/price-api
+    environment:
+      DATABASE_URL: postgres://pulse:password@timescaledb:5432/pulse_db
+    ports:
+      - "4000:4000"
+    depends_on:
+      - timescaledb
+    networks:
+      - pulse
+
+  alert-engine:
+    build: ./services/alert-engine
+    ports:
+      - "4001:4001"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      user-prefs:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: "postgresql://pulse:password@timescaledb:5432/pulse_db"
+      KAFKA_BROKER: redpanda:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      USER_PREFS_URL: "http://user-prefs:3000"
+    networks:
+      - pulse
+    command: >
+      sh -c "
+        pnpm exec prisma generate &&
+        pnpm start:dev
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  trade-executor:
+    build:
+      context: ./services/trade-executor
+      dockerfile: Dockerfile
+    environment:
+      KAFKA_BROKER: redpanda:9092
+      USER_PREFS_URL: "http://user-prefs:3000"
+      EXCHANGE_API_URL: "http://exchange-proxy:4000"
+      TRADE_MODE: binance
+      BINANCE_API_KEY: ${BINANCE_API_KEY}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET}
+    depends_on:
+      - redpanda
+      - user-prefs
+    networks:
+      - pulse
+
+  processor:
+    build:
+      context: ./services/processor
+      dockerfile: Dockerfile
+    container_name: processor
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      REDIS_HOST: redis
+      PGHOST: timescaledb
+      PGUSER: pulse
+      PGPASSWORD: password
+      PGDATABASE: pulse_db
+      DATABASE_URL: "postgresql://pulse:password@timescaledb:5432/pulse_db"
+    networks:
+      - pulse
+    command: >
+      sh -c "
+        pnpm exec prisma generate &&
+        pnpm start:dev
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+networks:
+  pulse:
+    driver: bridge
