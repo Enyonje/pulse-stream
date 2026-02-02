@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: frontend
+    env: static
+    buildCommand: npm install -g pnpm && pnpm install && pnpm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://auth.onrender.com
+      - key: VITE_WS_URL
+        value: wss://ws-gateway.onrender.com
+
+  - type: web
+    name: auth
+    env: docker
+    dockerfilePath: ./services/auth/Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        value: postgresql://pulse:password@timescaledb:5432/pulse_db
+      - key: KAFKA_BROKER
+        value: redpanda:9092
+      - key: JWT_SECRET
+        value: supersecretjwt
+
+  - type: web
+    name: ws-gateway
+    env: docker
+    dockerfilePath: ./services/ws-gateway/Dockerfile
+    envVars:
+      - key: REDIS_HOST
+        value: redis
+      - key: REDIS_PORT
+        value: 6379
+
+databases:
+  - name: timescaledb
+    databaseName: pulse_db
+    user: pulse
